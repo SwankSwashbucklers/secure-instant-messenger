@@ -1,32 +1,99 @@
+"""
+    Crypto helpers for the instant messaging system.
+"""
+
 from os import urandom
 from functools import reduce
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.backends import default_backend
 
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.padding import PKCS7
+from cryptography.hazmat.primitives.hashes import Hash, SHA256, SHA1
+from cryptography.hazmat.primitives.asymmetric import rsa, padding, dsa
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import serialization, hashes
+__all__ = [
+    'RSAPublicKey', 'RSAPrivateKey', 'DSAPublicKey', 'DSAPrivateKey',
+    'get_public_key', 'get_private_key',
+    'generate_rsa_keys', 'generate_dsa_keys',
+    'encrypt', 'decrypt', 'dh_encrypt', 'dh_decrypt',
+    'sign', 'verify_signature', 'hash_items', 'hashn', 'encode', 'decode']
 
-__all__ = ['get_public_key', 'get_private_key', 'encrypt', 'decrypt', 'sign', 'verify_signatue', 'hash_items', 'hashn', 'verify_message', 'encode', 'decode_string', 'decode_int']
+RSAPublicKey = rsa.RSAPublicKeyWithSerialization
+RSAPrivateKey = rsa.RSAPrivateKeyWithSerialization
+
+DSAPublicKey = dsa.DSAPublicKeyWithSerialization
+DSAPrivateKey = dsa.DSAPrivateKeyWithSerialization
+
+def encode(item):
+    if isinstance(item, str):   return item.encode('utf-8')
+    if isinstance(item, int):   return item.to_bytes(4, byteorder='big')
+    if isinstance(item, bytes): return item
+    if isinstance(item, RSAPublicKey) or isinstance(item, DSAPublicKey):
+        return item.public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    if isinstance(item, RSAPrivateKey) or isinstance(item, DSAPrivateKey):
+        return item.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()
+        )
+
+
+def decode(data, data_type):
+    if data_type is str:   return str(data, 'utf-8')
+    if data_type is int:   return int.from_bytes(data, byteorder='big')
+    if data_type is bytes: return data
+    if data_type is RSAPublicKey or data_type is DSAPublicKey:
+        return serialization.load_pem_public_key(data, default_backend())
+    if data_type is RSAPrivateKey or data_type is DSAPrivateKey:
+        return serialization.load_pem_private_key(data, None, default_backend())
 
 
 def get_public_key(filename):
-    with open(filename, 'rb') as public_key_file:
-        return serialization.load_pem_public_key(
-            public_key_file.read(),
-            backend=default_backend()
-        )
+    with open(filename, 'rb') as f:
+        return decode(f.read(), RSAPublicKey)
+
 
 def get_private_key(filename):
-    with open(filename, 'rb') as private_key_file:
-        return serialization.load_pem_private_key(
-            private_key_file.read(),
-            password=None,
-            backend=default_backend()
-        )
+    with open(filename, 'rb') as f:
+        return decode(f.read(), RSAPrivateKey)
+
+
+def generate_rsa_keys():
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=2048,
+        backend=default_backend()
+    )
+    public_key = private_key.public_key()
+    return public_key, private_key
+
+
+def generate_dsa_keys():
+    private_key = dsa.generate_private_key(
+        key_size=2048,
+        backend=default_backend()
+    )
+    public_key = private_key.public_key()
+    return public_key, private_key
+
+
+def hash_items(*args):
+    """ Returns a hash of the provided arguments """
+    digest = Hash(SHA256(), backend=default_backend())
+    for item in args:
+        digest.update(item)
+    return digest.finalize()
+
+
+def hashn(item, n):
+    return reduce(lambda x, _: hash_items(x), range(n), item)
+
 
 def encrypt(public_key, data):
     """ Returns a symmetrical encryption of the padded input data, with the
@@ -52,8 +119,8 @@ def encrypt(public_key, data):
     # asymmetrically encrypt the key
     encrypted_key = public_key.encrypt(symmetric_key,
         padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(),
+            mgf=padding.MGF1(algorithm=SHA1()),
+            algorithm=SHA1(),
             label=None
         )
     )
@@ -74,8 +141,8 @@ def decrypt(private_key, data):
     # decrypt symmetric key
     session_key = private_key.decrypt(encrypted_key,
         padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(),
+            mgf=padding.MGF1(algorithm=SHA1()),
+            algorithm=SHA1(),
             label=None
         )
     )
@@ -95,52 +162,50 @@ def decrypt(private_key, data):
     return unpadded_data
 
 
+def dh_encrypt(session_key, data):
+    urandom(16)
+    padder = PKCS7(128).padder()
+    padded_data = padder.update(data) + padder.finalize()
+    encryptor = Cipher(
+        algorithms.AES(symmetric_key),
+        modes.CBC(iv),
+        backend=default_backend()
+    ).encryptor()
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+    return IFS.join([iv, encrypted_data])
+
+
+def dh_decrypt(session_key, data):
+    iv, encrypted_data = data.split(IFS)
+    decryptor = Cipher(
+        algorithms.AES(session_key),
+        modes.CBC(iv),
+        backend=default_backend()
+    ).decryptor()
+    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    unpadder = PKCS7(128).unpadder()
+    unpadded_data = unpadder.update(padded_data) + unpadder.finalize()
+    return unpadded_data
+
+
 def sign(private_key, data):
     return private_key.sign(
-        data,
+        encode(data),
         padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
+            mgf=padding.MGF1(SHA256()),
             salt_length=padding.PSS.MAX_LENGTH
         ),
-        hashes.SHA256()
+        SHA256()
     )
 
 
-def verify_signatue(public_key, signature, data):
+def verify_signature(public_key, signature, data):
     """ Function that verifies the signature of the input ciphertext.
         Throws an InvalidSignature if verification fails. """
     public_key.verify(signature, data,
         padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
+            mgf=padding.MGF1(SHA256()),
             salt_length=padding.PSS.MAX_LENGTH
         ),
-        hashes.SHA256()
+        SHA256()
     )
-
-def hash_items(*args):
-    """ Returns a hash of the provided arguments """
-    digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    for item in args:
-        digest.update(item)
-    return digest.finalize()
-
-def hashn(item, n):
-    return reduce(lambda x, _: hash_items(x), range(n), item) # TODO: test this
-
-def verify_message(message, verify, handle):
-    pass
-
-
-#### HELPERS ###################################################################
-# TODO: Maybe move these to their own helpers file
-def encode(item):
-    if type(item) is str:
-        return item.encode('utf-8')
-    if type(item) is int:
-        return item.to_bytes(4, byteorder='big')
-
-def decode_string(item):
-    return str(item, 'utf-8')
-
-def decode_int(item):
-    return int.from_bytes(item, byteorder='big')

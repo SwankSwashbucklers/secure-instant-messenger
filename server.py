@@ -1,74 +1,39 @@
-# TODO: add exceptions where ever things dont look like they should,
-#       maybe return feedback from the server?
-
-
-# TODO: you can cache the server's cookie (maybe)
 
 # TODO: nice handling of ctrl-c + messages 'press ctrl-c to quit'
 
 # TODO: config file with addresses and ports?
 
-# from common import Connection_Handler, Connection_Helper, decrypt, encrypt, hash_items, sign
-# from common import get_public_key, get_private_key
-# from common import NonceVerificationError, ResourceNotFoundError
-# from common.Constants import GREETING, IFS
-# from common.ServerConfiguration import Address as SERVER_ADDRESS
-# from common.ServerConfiguration import Resources as SERVER_RESOURCES
-# from common.ServerConfiguration import Methods as SERVER_METHODS
-# from common.ServerConfiguration import Public_Key as SERVER_PUBKEY
 
-from common import ConnectionHelper, ConnectionHandler
+from common import ConnectionHandler
 from common.config import *
 from common.crypto import *
 from common.exceptions import *
+from common.db import *
 
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.serialization import PrivateFormat, PublicFormat, Encoding
+from sqlite3 import Error as SQLiteError
+from cryptography.exceptions import InvalidSignature
 
-import sqlite3 as sqlite
 from os import urandom
 from time import time
+from random import random
+
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+from signal import signal, SIGINT
+from sys import exit
 
 
-# helpers
-def get_data_for_user(username):
-    # fetch from the db
-    with sqlite.connect('resources/users.db') as con:
-        cur = con.cursor()
-        try:
-            result_set = cur.execute('SELECT * FROM USERS WHERE NAME == ?', [username])
-        except sqlite.Error as e:
-            print(e)
-        else:
-            user = result_set.fetchone()
-            if user is None: # there should be a user
-                return # TODO throw error
-            if result_set.fetchone() is None: # there should only be one user
-                print('USER', user)
-                uid, _, phash, n, _ = user
-                return uid, phash, n
-            return 1 # TODO: throw error
+### Globals ####################################################################
+CHAT_SERVER = None
 
-def update_user(uid, passwd_hash, n):
-    with sqlite.connect('resources/users.db') as con:
-        cur = con.cursor()
-        try:
-            cur.execute('''
-                UPDATE USERS SET
-                    PASSWD_HASH = ?, N = ?, LAST_LOGIN = ?
-                WHERE USERS.ID == ?''',
-                [ passwd_hash, n, int(time()), uid ]
-            )
-        except sqlite.Error as e:
-            print(e)
 
-class ServerHelper(ConnectionHelper):
-
-    def __init__(self, client_address, server, client_name, client_pubkey, nonce):
-        super().__init__(client_address, server)
+### Connection Delegates #######################################################
+class ConnectionHelper():
+    def __init__(self, address, owner, client_name, client_pubkey, nonce):
+        self.address = address
+        self.owner = owner
         self.client_name = client_name
         self.client_pubkey = client_pubkey
+        self.nonce = urandom(32)
         self.initial_action(nonce)
 
     def decrypt_message(self, ciphertext):
@@ -78,138 +43,235 @@ class ServerHelper(ConnectionHelper):
         """ Encrypts and sends a message """
         message = IFS.join(args)
         ciphertext = encrypt(self.client_pubkey, message)
-        super().send(ciphertext)
+        self.owner.send(ciphertext, self.address)
 
 
-class AuthenicationHelper(ServerHelper):
-
+class AuthenticationHelper(ConnectionHelper):
     def initial_action(self, nonce):
-        self.nonce = urandom(32)
-        self.user_data = get_data_for_user(self.client_name)
-        _, _, n = self.user_data
-        self.send(nonce, encode(n), self.nonce)
-
-    def handle_response(self, response):
         try:
-            passwd_hash, nonce = self.decrypt_message(response)
-        except ValueError:
-            return self.finish(False)
-        if not nonce == self.nonce:
-            return self.finish(False)
-        uid, phash, n = self.user_data
-        if not hash_items(passwd_hash) == phash:
-            return self.finish(False)
-        update_user(uid, passwd_hash, n-1) # replace db with passwd_hash and n-1
-        self.finish(True)
+            self.user_data = fetch_user_record(self.client_name)
+        except (UsernameVerificationError, SQLiteError) as e:
+            self.owner.handle_exception(e, self.address)
+            self.owner.remove_connection(self.address)
+        else:
+            *_, n = self.user_data
+            self.send(nonce, self.nonce, encode(n))
 
-    def finish(self, success):
-        if success:
-            certificate = self.owner.generate_certificate(
-                self.client_name, self.address, self.client_pubkey
+    def handle_response(self, response, status):
+        try:
+            nonce, passwd_hash = self.decrypt_message(response)
+            if not nonce == self.nonce:
+                raise NonceVerificationError()
+            uid, phash, n = self.user_data
+            if not hash_items(passwd_hash) == phash:
+                raise PasswordVerificationError()
+            # replace db with new passwd_hash and n-1
+            update_user_record(uid, passwd_hash, n-1)
+        except Exception as e:
+            self.owner.handle_exception(e, self.address)
+        else:
+            # generate resources and send them to the client
+            self.send(
+                self.owner.add_user(self.client_name, self.address, self.client_pubkey),
+                self.owner.get_client_list(),
+                self.owner.get_CRL()
             )
-            client_list = self.owner.get_client_list()
-            self.send(certificate, client_list)
-            print('\n\n\nCLIENT LIST', client_list)
-            self.owner.client_list[self.address] = (self.client_name, self.client_pubkey)
-        super().finish()
+        finally:
+            # finally, remove the open connection
+            self.owner.remove_connection(self.address)
 
 
-class ResourceRequestHelper(ServerHelper):
-
+class ResourceRequestHelper(ConnectionHelper):
     def initial_action(self, nonce):
-        self.nonce = urandom(32)
         self.send(nonce, self.nonce)
 
-    def handle_response(self, response):
+    def handle_response(self, response, status):
         try:
             nonce, resource = self.decrypt_message(response)
-            resource = SERVER_RESOURCES(decode_int(resource))
+            resource = SERVER_RESOURCES(decode(resource, int))
             if not nonce == self.nonce:
                 raise NonceVerificationError()
             if not resource in SERVER_RESOURCES:
                 raise ResourceNotFoundError()
-        except (ValueError, NonceVerificationError, ResourceNotFoundError):
-            self.finish(False) # break off connection
+        except (ValueError, NonceVerificationError, ResourceNotFoundError) as e:
+            self.owner.handle_exception(e, self.address)
         else:
             fetched_resource = None
-            if resource == SERVER_RESOURCES.LIST:
+            user = (self.client_name, self.address)
+            if resource is SERVER_RESOURCES.LIST:
                 fetched_resource = self.owner.get_client_list()
-            elif resource == SERVER_RESOURCES.CRL:
+                print('-> User: "{}" at: {} requested client list.'.format(*user))
+            elif resource is SERVER_RESOURCES.CRL:
                 fetched_resource = self.owner.get_CRL()
-            print('RESOURCE LIST', fetched_resource)
+                print('-> User: "{}" at: {} requested CRL.'.format(*user))
             self.send(fetched_resource)
-
-    def finish(self, success):
-        super().finish()
-
+        finally:
+            self.owner.remove_connection(self.address)
 
 
-
+### Connection Handler #########################################################
 class ChatServer(ConnectionHandler):
-
-    ADDRESS = SERVER_ADDRESS
-
-    def __init__(self):
-        super().__init__(self.ADDRESS)
-        self.client_list = {} # address: (name, pubkey)
-
-        # certificate stuff
+    def __init__(self, address):
+        super().__init__(address)
+        self.client_list = {} # address: (name, pubkey, certificate_id, certificate_expiration)
+        self.CRL = {} # certificate_id: certificate_expiration
+        self.certificate_id = int(random()*10000) # random starting id for certificates
 
         # public and private keys
         self.pubkey = get_public_key('resources/server_public_key')
         self.prikey = get_private_key('resources/server_private_key')
 
-    def decrypt_message(self, message):
-        return decrypt(self.prikey, message).split(IFS)
-
     def init_connection(self, message, address):
-        items = self.decrypt_message(message)
-        if len(items) == 3: # Authentication
-            name, pubkey, nonce = items
-            name = str(name, 'utf-8')
-            pubkey = load_pem_public_key(pubkey, backend=default_backend())
-            args = (AuthenicationHelper, self, name, pubkey, nonce)
-            super().add_connection(address, *args)
-        elif len(items) == 2: # Fetch Resource
-            nonce, name = items
-            name = str(name, 'utf-8')
-            try:
-                _, pubkey = self.client_list[address]
-            except KeyError:
-                pass # TODO: throw error?
+        try:
+            m, *items = decrypt(self.prikey, message).split(IFS)
+            method = SERVER_METHODS(decode(m, int))
+            if method is SERVER_METHODS.AUTHENTICATE:
+                name, nonce, pubkey = items
+                name = decode(name, str)
+                if name in [v[0] for k, v in self.client_list.items()]:
+                    raise AlreadyLoggedInError()
+                pubkey = decode(pubkey, RSAPublicKey)
+                connection_helper_inst = AuthenticationHelper(
+                    address, self, name, pubkey, nonce
+                )
+                super().add_connection(address, connection_helper_inst)
+            elif method is SERVER_METHODS.RESOURCE:
+                name, nonce = items
+                name = decode(name, str)
+                self.is_authorized(name, address)
+                try:
+                    _, pubkey, *_ = self.client_list[address]
+                except KeyError:
+                    raise UserNotFoundError()
+                else:
+                    connection_helper_inst = ResourceRequestHelper(
+                        address, self, name, pubkey, nonce
+                    )
+                    super().add_connection(address, connection_helper_inst)
+            elif method is SERVER_METHODS.LOGOUT:
+                name, *signature = items
+                name = decode(name, str)
+                self.is_authorized(name, address)
+                try:
+                    _, pubkey, *_ = self.client_list[address]
+                    verify_signature(pubkey, *signature)
+                    _, message = signature
+                    if not decode(message, str) == FAREWELL:
+                        raise InvalidSignature()
+                except KeyError:
+                    raise UserNotFoundError()
+                except InvalidSignature:
+                    raise
+                else:
+                    self.remove_user(address)
+                    self.send(encode("Logout successful."), address)
             else:
-                args = (ResourceRequestHelper, self, name, pubkey, nonce)
-                super().add_connection(address, *args)
-        elif len(items) == 1:
-            pass # TODO: logout here
-        else:
-            pass # TODO: you got issues throw an exception or something
+                raise MethodNotFoundError()
+        except Exception as e:
+            self.handle_exception(e, address)
 
-    def generate_certificate(self, username, address, pubkey):
-        message = IFS.join([
-            urandom(16),
-            username.encode('utf-8'),
-            str(address).encode('utf-8'),
-            pubkey.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo),
-            int(time() + 20*60).to_bytes(4, byteorder='big')
-        ])
-        signature = sign(self.prikey, message)
-        return IFS.join([signature, message])
+    def handle_exception(self, e, address):
+        err_msg = ""
+        if type(e) is UserNotFoundError:
+            err_msg = "You are not authorized."
+        elif type(e) is MethodNotFoundError:
+            err_msg = "The requested server method was not found."
+        elif type(e) is ResourceNotFoundError:
+            err_msg = "The resource requested was not found."
+        elif type(e) is ValueError:
+            err_msg = "Message improperly formatted, please try again."
+        elif type(e) is NonceVerificationError:
+            err_msg = "Incorrect nonce value provided."
+        elif type(e) is PasswordVerificationError:
+            err_msg = "Incorrect password provided."
+        elif type(e) is UsernameVerificationError:
+            err_msg = "An improper username was provided.  Please try again."
+        elif type(e) is InvalidSignature:
+            err_msg = "Invalid signature provided."
+        elif type(e) is CertificateExpirationError:
+            err_msg = "Your certificate has expired, please login again."
+        elif type(e) is AlreadyLoggedInError:
+            err_msg = "User is already logged in."
+        elif type(e) is SQLiteError:
+            err_msg = "There was a database error.  Please try again."
+        else:
+            print('Unknown error:', e)
+            err_msg = "An unknown error occurred.  Please try again."
+        self.send(encode(err_msg), address, MESSAGE_STATUSES.ERROR)
+
+    def is_authorized(self, user, address):
+        try:
+            name, *_, expiration = self.client_list[address]
+            if expiration < int(time()):
+                self.remove_user(address)
+                raise CertificateExpirationError()
+            if not user == name:
+                raise UsernameVerificationError()
+        except KeyError:
+            raise UserNotFoundError()
 
     def get_CRL(self):
-        return ""
+        """ Clean out any expired certificates and return CRL """
+        self.CRL = {k:v for k,v in self.CRL.items() if v < int(time())}
+        return encode(','.join(str(k) for k in self.CRL.keys()))
 
     def get_client_list(self):
-        # TODO: maybe skip the requesting user?
-        client_list = []
-        for key, value in self.client_list.items():
-            (host, port), (name,_) = key, value
-            client_list.append(','.join([name, host, str(port)]).encode('utf-8'))
-        return IFS.join(client_list)
+        clients = [(v[0], k[0], str(k[1])) for k, v in self.client_list.items()]
+        return encode(';'.join(','.join([*x]) for x in clients))
+
+    def add_user(self, username, address, public_key):
+        """ Creates a certificate, and adds user to list of active users """
+        cert_id = self.certificate_id
+        expiration = int(time() + 30*60) # 30 minutes from now
+        cert_info = [cert_id, username, *address, public_key, expiration]
+        message = IFS.join(encode(x) for x in cert_info)
+        certificate = IFS.join([sign(self.prikey, message), message])
+        self.certificate_id += 1
+        self.client_list[address] = (username, public_key, cert_id, expiration)
+        print('-> User: "{}" at: {} logged in.'.format(username, address))
+        return certificate
+
+    def remove_user(self, address):
+        try:
+            name, _, cert_id, expiration = self.client_list.pop(address)
+            print('-> User: "{}"" at: {} logged out.'.format(name, address))
+            if expiration > int(time()):
+                self.CRL[cert_id] = expiration
+        except KeyError:
+            raise UserNotFoundError()
 
 
+### Command Line Interface #####################################################
+def parse_args():
+    parser = ArgumentParser(
+        formatter_class=ArgumentDefaultsHelpFormatter,
+        description=__doc__ )
+    parser.add_argument('-ip', '--host',
+        type=str,
+        default='127.0.0.1',
+        help='the ip address to run the client on.')
+    parser.add_argument('-p', '--port',
+        type=int,
+        default=8082,
+        help='the port to run the client on.')
+    return parser.parse_args()
+
+def signal_handler(signal, frame):
+    print("\nScript terminated by user...")
+    print("Attempting graceful shutdown...")
+    if not CHAT_SERVER is None:
+        CHAT_SERVER.shutdown()
+    exit(0)
+
+
+### Main #######################################################################
 def main():
-    ChatServer()
+    options = parse_args()
+    signal(SIGINT, signal_handler)
+    address = (options.host, options.port)
+    CHAT_SERVER = ChatServer(address)
+    print('Instant messaging authentication server running at:', address)
+    print('Press Ctrl-C to quit...', '\n')
 
 
 if __name__ == '__main__':
