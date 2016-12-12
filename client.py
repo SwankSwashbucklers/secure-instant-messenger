@@ -59,6 +59,8 @@ class ConnectionHelper():
             self.send(message)
             self.state += 1
         except Exception as e:
+            print(e)
+            raise e
             self.finish(False)
 
     def finish(self, success, *args):
@@ -137,20 +139,25 @@ class LogoutRequestHelper(ConnectionHelper):
 
 class ChatInitHelper(ConnectionHelper):
     def __init__(self, private_key, certificate, *args):
-        self.dh_public_key, self.dh_private_key = generate_dsa_keys()
+        self.dh_private_key = generate_dh_private_key()
         self.private_key = private_key
         self.certificate = certificate
         super().__init__(*args, self.step0, self.step1, self.step2)
 
     def step0(self, response, status):
-        print('REQUESTING COMMUNICATION!!!')
-        return encode(self.dh_public_key)
+        print('INITIALIZING COMMUNICATION!!!')
+        return encode(self.dh_private_key.public_key())
 
     def step1(self, response, status):
         peer_public_key, n1 = response.split(IFS)
-        self.peer_public_key = decode(peer_public_key, DSAPublicKey)
-        self.shared_key = self.dh_private_key.exchange(peer_public_key)
-        signed_msg = IFS.join([encode(self.dh_public_key), n1])
+        self.peer_public_key = decode(peer_public_key, DHPublicKey)
+        print("EXCHANGING KEYS")
+        print("PEER PUBLIC KEY HERE", self.peer_public_key)
+        # created dh shared key and then hash to 256 bits for use with AES
+        self.shared_key = self.dh_private_key.exchange(self.peer_public_key)
+        self.shared_key = hash_items(self.shared_key)
+        print("DID WE GET PAST THAT?")
+        signed_msg = IFS.join([encode(self.dh_private_key.public_key()), n1])
         signature = sign(self.private_key, signed_msg)
         return dh_encrypt(self.shared_key,
             IFS.join([
@@ -183,7 +190,7 @@ class ChatInitHelper(ConnectionHelper):
         pubkey = decode(pubkey, RSAPublicKey)
         signed_msg = IFS.join([peer_public_key, nonce])
         verify_signature(pubkey, sig, signed_msg)
-        peer_public_key = decode(peer_public_key, DSAPublicKey)
+        peer_public_key = decode(peer_public_key, DHPublicKey)
         if not peer_public_key == self.peer_public_key:
             raise InvalidSignature
         # everything checks out, set up the persistant connection
@@ -198,14 +205,16 @@ class ChatAuthenticationHelper():
         self.private_key = prikey
         self.certificate = cert
         self.peer_public_key = peer_public_key
-        self.dh_public_key, self.dh_private_key = generate_dsa_keys()
+        self.dh_private_key = generate_dh_private_key(public_key=peer_public_key)
+        # created dh shared key and then hash to 256 bits for use with AES
         self.shared_key = self.dh_private_key.exchange(peer_public_key)
+        self.shared_key = hash_items(self.shared_key)
         self.nonce = urandom(32)
         self.initial_action()
 
     def initial_action(self):
-        message = IFS.join([encode(self.dh_public_key), self.nonce])
-        self.owner.send(message)
+        message = IFS.join([encode(self.dh_private_key.public_key()), self.nonce])
+        self.owner.send(message, self.address)
 
     def handle_response(self, response, status):
         if status is MESSAGE_STATUSES.ERROR:
@@ -232,14 +241,14 @@ class ChatAuthenticationHelper():
             pubkey = decode(pubkey, RSAPublicKey)
             signed_msg = IFS.join([peer_public_key, n1])
             verify_signature(pubkey, sig, signed_msg)
-            peer_public_key = decode(peer_public_key, DSAPublicKey)
+            peer_public_key = decode(peer_public_key, DHPublicKey)
             if not peer_public_key == self.peer_public_key:
                 raise InvalidSignature
         except Exception as e:
             self.finish(False)
         else:
             # everything checks out
-            signed_msg = IFS.join([encode(self.dh_public_key), n2])
+            signed_msg = IFS.join([encode(self.dh_private_key.public_key()), n2])
             signature = sign(self.private_key, signed_msg)
             encrypted_message = dh_encrypt(self.shared_key,
                 IFS.join([
@@ -249,7 +258,7 @@ class ChatAuthenticationHelper():
                     signed_msg
                 ])
             )
-            self.owner.send(encrypted_message)
+            self.owner.send(encrypted_message, self.address)
             self.finish(True, self.username, self.owner, self.shared_key)
 
     def finish(self, success, *args):
@@ -368,6 +377,7 @@ class ChatClient(ConnectionHandler):
         def callback(success, *args):
             if not success:
                 print('\nUnable to start a conversation with', username, '\n')
+                self.update()
                 return
             print('\nStarting conversation with', username, '\n')
             _, _, shared_key = args
@@ -381,12 +391,12 @@ class ChatClient(ConnectionHandler):
 
     def init_connection(self, message, address):
         try:
-            peer_public_key = decode(message, DSAPublicKey)
+            peer_public_key = decode(message, DHPublicKey)
             # make sure your CRL is up to date before you initialize the helper
             #self.request_CRL() TODO
             helper_inst = ChatAuthenticationHelper(address, self,
                 self.username, self.prikey, self.certificate, peer_public_key)
-            self.owner.add_connection(self.address, helper_inst)
+            super().add_connection(self.address, helper_inst)
         except Exception as e:
             print(e)
             self.send(b'Error building session.', address, MESSAGE_STATUSES.ERROR)

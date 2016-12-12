@@ -5,6 +5,7 @@
 import sys
 from os import urandom
 from threading import Thread
+import _thread
 from socket import socket, AF_INET, SOCK_DGRAM
 
 from common.config import *
