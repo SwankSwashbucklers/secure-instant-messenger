@@ -1,10 +1,7 @@
-"""
-    docstring
-"""
 
-from os import urandom
+import os
 
-import time # TODO; get rid of
+import time
 
 from common import ConnectionHandler
 from common.config import *
@@ -15,11 +12,7 @@ from cryptography.exceptions import InvalidSignature
 
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from signal import signal, SIGINT
-from sys import exit
-
-
-### Globals ####################################################################
-CHAT_CLIENT = None
+import sys
 
 
 ### Connection Delegates #######################################################
@@ -29,15 +22,13 @@ class ConnectionHelper():
         self.address = address
         self.callback = callback
         self.owner = owner
-        self.nonce = urandom(32)
+        self.nonce = os.urandom(32)
         self.username = username
         self.pipeline = [*steps]
         self.send(GREETING)
 
     def send(self, message):
-        # print('FOOBAR SENDING', message, "TO", self.address)
         self.owner.send(encode(message), self.address)
-
 
     def encrypt_message(self, *args):
         return encrypt(SERVER_PUBKEY, IFS.join(encode(x) for x in args))
@@ -145,18 +136,14 @@ class ChatInitHelper(ConnectionHelper):
         super().__init__(*args, self.step0, self.step1, self.step2)
 
     def step0(self, response, status):
-        print('INITIALIZING COMMUNICATION!!!')
         return encode(self.dh_private_key.public_key())
 
     def step1(self, response, status):
         peer_public_key, n1 = response.split(IFS)
         self.peer_public_key = decode(peer_public_key, DHPublicKey)
-        print("EXCHANGING KEYS")
-        print("PEER PUBLIC KEY HERE", self.peer_public_key)
         # created dh shared key and then hash to 256 bits for use with AES
         self.shared_key = self.dh_private_key.exchange(self.peer_public_key)
         self.shared_key = hash_items(self.shared_key)
-        print("DID WE GET PAST THAT?")
         signed_msg = IFS.join([encode(self.dh_private_key.public_key()), n1])
         signature = sign(self.private_key, signed_msg)
         return dh_encrypt(self.shared_key,
@@ -190,7 +177,7 @@ class ChatInitHelper(ConnectionHelper):
         pubkey = decode(pubkey, RSAPublicKey)
         signed_msg = IFS.join([peer_public_key, nonce])
         verify_signature(pubkey, sig, signed_msg)
-        # TODO: the below
+        # TODO: the below, also validate that nonce
         # peer_public_key = decode(peer_public_key, DHPublicKey)
         # if not peer_public_key == self.peer_public_key:
         #     raise InvalidSignature
@@ -210,14 +197,13 @@ class ChatAuthenticationHelper():
         # created dh shared key and then hash to 256 bits for use with AES
         self.shared_key = self.dh_private_key.exchange(peer_public_key)
         self.shared_key = hash_items(self.shared_key)
-        self.nonce = urandom(32)
+        self.nonce = os.urandom(32)
 
     def initial_action(self):
         message = IFS.join([encode(self.dh_private_key.public_key()), self.nonce])
         self.owner.send(message, self.address)
 
     def handle_response(self, response, status):
-        print('\n\n\n\nJust confirming that we"re not getting to handle response\n\n')
         if status is MESSAGE_STATUSES.ERROR:
             print(self.address, 'sent the following error:', decode(response, str))
             return self.finish(False)
@@ -225,6 +211,7 @@ class ChatAuthenticationHelper():
             data = dh_decrypt(self.shared_key, response).split(IFS)
             name, cert_sig, *certificate, sig, peer_public_key, n1, n2 = data
             name = decode(name, str)
+            self.name = name
             # verify nonce
             if not n1 == self.nonce:
                 raise NonceVerificationError()
@@ -262,7 +249,7 @@ class ChatAuthenticationHelper():
                 ])
             )
             self.owner.send(encrypted_message, self.address)
-            self.finish(True, self.username, self.owner, self.shared_key)
+            self.finish(True, self.name, self.owner, self.shared_key)
 
     def finish(self, success, *args):
         self.owner.remove_connection(self.address)
@@ -283,19 +270,20 @@ class ChatMessagingHelper():
     def send(self, message):
         data = dh_encrypt(self.session_key, encode(message))
         self.owner.send(data, self.address)
-        print('You', '>', self.interlocutor, ':', message)
+        print('You > {}: {}\n>>> '.format(self.interlocutor, message), end="")
 
     def handle_response(self, response, status):
         message = dh_decrypt(self.session_key, response)
         message = decode(message, str)
         if message == FAREWELL:
             return self.finish()
-        print(self.interlocutor, '>', 'You', ':', message)
+        print('\n{} > You: {}\n>>> '.format(self.interlocutor, message), end="")
 
     def finish():
         self.owner.remove_connection(self.address)
 
 
+### Chat Client ################################################################
 class ChatClient(ConnectionHandler):
     def __init__(self, address):
         super().__init__(address)
@@ -303,8 +291,8 @@ class ChatClient(ConnectionHandler):
         self._CRL = [] # certificate_id
         self.certificate = None
         self.state = CLIENT_STATE.INITIAL
-        self.pubkey, self.prikey = generate_rsa_keys()
-        #self.authenticate()
+        self.prikey = generate_rsa_private_key()
+        self.pubkey = self.prikey.public_key()
         self.username = None
         self.password = None
         print('Username: ', end="")
@@ -342,77 +330,78 @@ class ChatClient(ConnectionHandler):
                 self.certificate, self.active_users, self.CRL = args
                 self.state = CLIENT_STATE.AUTHENTICATED
                 print('\nLogin Successful!\n\n>>> ', end="")
-                #self.update()
                 return
             self.state = CLIENT_STATE.UNATHENTICATED
             self.username = None
             self.password = None
-            print('Username: ', end="")
-            #self.authenticate()
+            print('\nLogin was unsuccessful, please try again.\n\nUsername: ', end="")
         self._conn(callback, SERVER_ADDRESS, AuthenticationHelper, self.password, self.pubkey)
 
-    def request_list(self):
+    def request_list(self, verbose=True):
         def callback(success, *args):
             if success:
                 self.active_users, = args
                 users_str = ', '.join(
                     x for x in self.active_users.keys() if not x == self.username
                 )
-                print('\nActive users are: {}\n>>> '.format(users_str), end="")
+                if not verbose:
+                    return
+                if users_str:
+                    print('\nActive users are: {}\n\n>>> '.format(users_str), end="")
+                else:
+                    print('\nThere are no active users.\n\n>>> ', end="")
             else:
+                if not verbose:
+                    return
                 print('>>> ', end="")
-            #self.update()
         self._conn(callback, SERVER_ADDRESS, ResourceRequestHelper, SERVER_RESOURCES.LIST)
 
     def request_CRL(self):
         def callback(success, *args):
-            if success:
+            if not success:
+                print('\nError retrieving CRL.\n')
+            else:
                 self.CRL, = args
-            print('>>> ', end="")
-            #self.update()
+            self.request_list(verbose=False)
         self._conn(callback, SERVER_ADDRESS, ResourceRequestHelper, SERVER_RESOURCES.CRL)
 
     def request_logout(self):
         def callback(success, *args):
             if not success:
-                print('Logout attempt was unsuccessful.\n')
-                self.update()
+                print('\nLogout attempt was unsuccessful.\n\n>>> ', end="")
                 return
-            print('\nYou have been successfully logged out.\n')
             if self.state is CLIENT_STATE.SHUTDOWN:
-                self.shutdown()
+                print('\nYou have been successfully logged out.\n')
+                os._exit(0)
                 return
             self.state = CLIENT_STATE.INITIAL
             self.username = None
             self.password = None
-            print('Username: ', end="")
-            #self.authenticate()
+            print('\nYou have been successfully logged out.\n\nUsername: ', end="")
         self._conn(callback, SERVER_ADDRESS, LogoutRequestHelper)
 
     def request_communication(self, username, address, initial_message):
         def callback(success, *args):
             if not success:
-                print('\nUnable to start a conversation with', username, '\n')
-                self.update()
+                print('\nUnable to start a conversation with {}\n>>> '.format(username), end="")
                 return
-            print('\nStarting conversation with', username, '\n')
+            print('\nStarting conversation with', username)
             _, _, shared_key = args
             self.send(dh_encrypt(shared_key, encode(initial_message)), address) # send initial message
-            print('You', '>', username, ':', initial_message)
+            print('You > {}: {}\n>>> '.format(username, initial_message), end="")
             helper_inst = ChatMessagingHelper(address, username, self, shared_key)
             self.add_connection(address, helper_inst)
         # make sure your CRL is up to date before you initialize the helper
-        #self.request_CRL() TODO
+        self.request_CRL()
         self._conn(callback, address, ChatInitHelper, self.prikey, self.certificate)
 
     def init_connection(self, message, address):
         try:
             peer_public_key = decode(message, DHPublicKey)
             # make sure your CRL is up to date before you initialize the helper
-            #self.request_CRL() TODO
+            self.request_CRL()
             helper_inst = ChatAuthenticationHelper(address, self,
                 self.username, self.prikey, self.certificate, peer_public_key)
-            print('\n\n\n INIT CONNECTION, HERES THE ADDRESS: {} \n\n\n'.format(address))
             super().add_connection(address, helper_inst)
             helper_inst.initial_action() # initial action after listener has been registered
         except Exception as e:
@@ -436,41 +425,27 @@ class ChatClient(ConnectionHandler):
             if method == 'send':
                 user, *rest = args
                 if user == self.username:
-                    print('\nError: You cannot send a message to yourself')
-                    return self.update()
-                if not user in self.active_users.keys():
-                    print('\nError: The requested user is not online.')
-                    return self.update()
-                message = ' '.join(rest)
-                address = self.active_users[user]
-                print("ADDRESS", address, type(address))
-                print("ADDRESS0", address[0], type(address[0]))
-                print("ADDRESS1", address[1], type(address[1]))
-                if address in self.open_connections.keys():
-                    return self.open_connections[address].send(message)
-                return self.request_communication(user, address, message)
+                    print('\nError: You cannot send a message to yourself.\n>>> ')
+                elif not user in self.active_users.keys():
+                    print('\nError: The requested user is not online.\n>>> ')
+                else:
+                    message = ' '.join(rest)
+                    address = self.active_users[user]
+                    if address in self.open_connections.keys():
+                        return self.open_connections[address].send(message)
+                    return self.request_communication(user, address, message)
             if method == 'logout' and not args:
                 return self.request_logout()
             if method == 'exit' and not args:
                 return self.exit()
             print('Invalid command.')
 
-    # def authenticate(self):
-    #     if self.state is CLIENT_STATE.AUTHENTICATED:
-    #         print('You are already logged in.')
-    #         return self.update()
-    #     if self.state is CLIENT_STATE.UNATHENTICATED:
-    #         print('\nLogin failed.  Please try again.\n')
-    #     self.username = input('Enter Username: ')
-    #     self.password = input('Enter Password: ')
-    #     self.request_authentication()
-
     def exit(self):
         if self.state is CLIENT_STATE.AUTHENTICATED:
             self.state = CLIENT_STATE.SHUTDOWN
             self.request_logout()
             return
-        super().shutdown()
+        sys.exit(0)
 
 
 
@@ -492,9 +467,7 @@ def parse_args():
 def cleanly_exit():
     print("\nScript terminated by user...")
     print("Attempting graceful shutdown...")
-    if not CHAT_CLIENT is None:
-        CHAT_CLIENT.shutdown()
-    exit(0)
+    sys.exit(0)
 
 def signal_handler(signal, frame):
     cleanly_exit()
@@ -504,11 +477,11 @@ def signal_handler(signal, frame):
 def main():
     options = parse_args()
     signal(SIGINT, signal_handler)
-    CHAT_CLIENT = ChatClient((options.host, options.port))
+    chat_client = ChatClient((options.host, options.port))
     while True:
         try:
             usr_input = input('')
-            CHAT_CLIENT.receive_user_input(usr_input)
+            chat_client.receive_user_input(usr_input)
         except KeyboardInterrupt:
             cleanly_exit()
 

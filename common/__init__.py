@@ -6,7 +6,6 @@ import sys
 import time
 from os import urandom
 from threading import Thread
-import _thread
 from socket import socket, AF_INET, SOCK_DGRAM
 from socket import timeout as SocketTimeout
 from queue import Queue
@@ -17,7 +16,7 @@ from common.exceptions import *
 
 __all__ = ['config', 'crypto', 'exceptions', 'db', 'ConnectionHandler']
 
-
+### Globals ####################################################################
 _OUTGOING_QUEUE = Queue()
 _INCOMING_QUEUE = Queue()
 
@@ -25,32 +24,26 @@ class SocketThread(Thread):
     def __init__(self, address):
         Thread.__init__(self)
         self.address = address
+        self._socket = socket(AF_INET, SOCK_DGRAM)
+        self._socket.bind(self.address)
+        self._socket.settimeout(0.01)
 
     def run(self):
-        # initialize socket & start listening
-        _socket = socket(AF_INET, SOCK_DGRAM)
-        _socket.bind(self.address)
-        _socket.settimeout(0.01)
         while True:
             try:
-                data, address = _socket.recvfrom(4096)
+                data, address = self._socket.recvfrom(4096)
             except (BlockingIOError, SocketTimeout):
                 while not _OUTGOING_QUEUE.empty():
                     outgoing_msg = _OUTGOING_QUEUE.get()
-                    if not outgoing_msg[1] == SERVER_ADDRESS:
-                        print('FOOBAR SENDING {} TO {}'.format(*outgoing_msg))
-                    _socket.sendto(*outgoing_msg)
+                    self._socket.sendto(*outgoing_msg)
             else:
-                if not address == SERVER_ADDRESS:
-                    print('\n\nMessage recieved', data, 'From', address)
                 _INCOMING_QUEUE.put((data, address))
 
 class ConnectionHandler():
     def __init__(self, address):
-        self.address = address # TODO: probably dont really need this
+        self.address = address
         self.secret = urandom(32) # secret for stateless cookies
         self.open_connections = {}
-
         listening_thread = SocketThread(address)
         listening_thread.daemon = True
         listening_thread.start()
@@ -85,7 +78,6 @@ class ConnectionHandler():
         else:
             if not message == GREETING:
                 return False
-            print("Sent Cookie")
             self.send(self.generate_cookie(address), address)
             return True
 
@@ -104,7 +96,6 @@ class ConnectionHandler():
         return hash_items(*args)
 
     def add_connection(self, address, connection_helper_inst):
-        #print("Connection added")
         self.open_connections[address] = connection_helper_inst
 
     def remove_connection(self, address):
@@ -112,19 +103,5 @@ class ConnectionHandler():
             then it does nothing. """
         try:
             self.open_connections.pop(address)
-            #print("Connection removed")
         except KeyError as e:
             pass
-
-    def shutdown(self):
-        sys.exit(0)
-        # print("Shutting down server at:", self.address)
-        # try: # wait for listening thread to close
-        #     self._socket.close() # close socket
-        #     #self.listening_thread.join()
-        # except Exception as e:
-        #     print("Exception shutting down server", e)
-        # else:
-        #     print("Server successfully shutdown")
-        # finally:
-        #     sys.exit(0)

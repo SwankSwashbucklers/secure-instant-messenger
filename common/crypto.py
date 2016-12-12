@@ -18,7 +18,6 @@ __all__ = [
     'RSAPublicKey', 'RSAPrivateKey', 'DHPublicKey',
     'generate_dh_private_key', 'generate_rsa_private_key',
     'get_public_key', 'get_private_key', # TODO: rename
-    'generate_rsa_keys', 'generate_dsa_keys',
     'encrypt', 'decrypt', 'dh_encrypt', 'dh_decrypt',
     'sign', 'verify_signature', 'hash_items', 'hashn', 'encode', 'decode']
 
@@ -34,23 +33,6 @@ _DHParameters = dh.DHParameterNumbers(_p, _g).parameters(backend=default_backend
 
 _DH_IFS = b'<break-dh-key>'
 _MSG_IFS = b'<break-msg-el>'
-
-# def generate_dh_parameters():
-#     parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
-#     return parameters
-
-
-# def gen_pri_from_nums(p, g):
-#     parameter_numbers = dh.DHParameterNumbers(p, g)
-#     private_key = parameter_numbers.parameters(
-#         backend=default_backend()
-#     ).generate_private_key()
-#     return private_key
-#
-# def gen_pub_from_nums(p, g, y):
-#     parameter_numbers = dh.DHParameterNumbers(p, g)
-#     public_numbers = dh.DHPublicNumbers(y, parameter_numbers)
-#     return public_numbers.public_key(backend=default_backend())
 
 def generate_rsa_private_key():
     return rsa.generate_private_key(
@@ -111,15 +93,6 @@ def get_private_key(filename):
 def generate_rsa_keys():
     private_key = rsa.generate_private_key(
         public_exponent=65537,
-        key_size=2048,
-        backend=default_backend()
-    )
-    public_key = private_key.public_key()
-    return public_key, private_key
-
-
-def generate_dsa_keys():
-    private_key = dsa.generate_private_key(
         key_size=2048,
         backend=default_backend()
     )

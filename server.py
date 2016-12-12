@@ -1,6 +1,3 @@
-
-# TODO: nice handling of ctrl-c + messages 'press ctrl-c to quit'
-
 # TODO: config file with addresses and ports?
 
 
@@ -20,10 +17,6 @@ from random import random
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from signal import signal, SIGINT
 from sys import exit
-
-
-### Globals ####################################################################
-CHAT_SERVER = None
 
 
 ### Connection Delegates #######################################################
@@ -259,8 +252,6 @@ def parse_args():
 def signal_handler(signal, frame):
     print("\nScript terminated by user...")
     print("Attempting graceful shutdown...")
-    if not CHAT_SERVER is None:
-        CHAT_SERVER.shutdown()
     exit(0)
 
 
@@ -269,7 +260,7 @@ def main():
     options = parse_args()
     signal(SIGINT, signal_handler)
     address = (options.host, options.port)
-    CHAT_SERVER = ChatServer(address)
+    chat_server = ChatServer(address)
     print('Instant messaging authentication server running at:', address)
     print('Press Ctrl-C to quit...', '\n')
     while True:
