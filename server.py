@@ -14,7 +14,7 @@ from sqlite3 import Error as SQLiteError
 from cryptography.exceptions import InvalidSignature
 
 from os import urandom
-from time import time
+import time
 from random import random
 
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
@@ -202,7 +202,7 @@ class ChatServer(ConnectionHandler):
     def is_authorized(self, user, address):
         try:
             name, *_, expiration = self.client_list[address]
-            if expiration < int(time()):
+            if expiration < int(time.time()):
                 self.remove_user(address)
                 raise CertificateExpirationError()
             if not user == name:
@@ -212,7 +212,7 @@ class ChatServer(ConnectionHandler):
 
     def get_CRL(self):
         """ Clean out any expired certificates and return CRL """
-        self.CRL = {k:v for k,v in self.CRL.items() if v < int(time())}
+        self.CRL = {k:v for k,v in self.CRL.items() if v < int(time.time())}
         return encode(','.join(str(k) for k in self.CRL.keys()))
 
     def get_client_list(self):
@@ -222,7 +222,7 @@ class ChatServer(ConnectionHandler):
     def add_user(self, username, address, public_key):
         """ Creates a certificate, and adds user to list of active users """
         cert_id = self.certificate_id
-        expiration = int(time() + 30*60) # 30 minutes from now
+        expiration = int(time.time() + 30*60) # 30 minutes from now
         cert_info = [cert_id, username, *address, public_key, expiration]
         message = IFS.join(encode(x) for x in cert_info)
         certificate = IFS.join([sign(self.prikey, message), message])
@@ -235,7 +235,7 @@ class ChatServer(ConnectionHandler):
         try:
             name, _, cert_id, expiration = self.client_list.pop(address)
             print('-> User: "{}"" at: {} logged out.'.format(name, address))
-            if expiration > int(time()):
+            if expiration > int(time.time()):
                 self.CRL[cert_id] = expiration
         except KeyError:
             raise UserNotFoundError()
@@ -272,6 +272,9 @@ def main():
     CHAT_SERVER = ChatServer(address)
     print('Instant messaging authentication server running at:', address)
     print('Press Ctrl-C to quit...', '\n')
+    while True:
+        time.sleep(0.01)
+
 
 
 if __name__ == '__main__':
