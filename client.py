@@ -177,10 +177,8 @@ class ChatInitHelper(ConnectionHelper):
         pubkey = decode(pubkey, RSAPublicKey)
         signed_msg = IFS.join([peer_public_key, nonce])
         verify_signature(pubkey, sig, signed_msg)
-        # TODO: the below, also validate that nonce
-        # peer_public_key = decode(peer_public_key, DHPublicKey)
-        # if not peer_public_key == self.peer_public_key:
-        #     raise InvalidSignature
+        if not peer_public_key == encode(self.peer_public_key):
+            raise InvalidSignature
         # everything checks out, set up the persistant connection
         self.finish(True, name, self.address, self.shared_key)
 
@@ -229,12 +227,10 @@ class ChatAuthenticationHelper():
             pubkey = decode(pubkey, RSAPublicKey)
             signed_msg = IFS.join([peer_public_key, n1])
             verify_signature(pubkey, sig, signed_msg)
-            # TODO: the below
-            # peer_public_key = decode(peer_public_key, DHPublicKey)
-            # if not peer_public_key == self.peer_public_key:
-            #     raise InvalidSignature
+            if not peer_public_key == encode(self.peer_public_key):
+                raise InvalidSignature
         except Exception as e:
-            print("\nERROR HERE  "+e+'\n')
+            print(e)
             self.finish(False)
         else:
             # everything checks out
@@ -254,7 +250,6 @@ class ChatAuthenticationHelper():
     def finish(self, success, *args):
         self.owner.remove_connection(self.address)
         if not success:
-            print("\nIT WAS NOT A SUCCESS\n")
             return
         helper_inst = ChatMessagingHelper(self.address, *args)
         self.owner.add_connection(self.address, helper_inst)

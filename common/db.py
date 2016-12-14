@@ -3,14 +3,25 @@
     messaging system.
 """
 
+import os
+import time
 import sqlite3 as sqlite
-from time import time
 
-from common.config import INITIAL_USER_ACCOUNTS
 from common.crypto import encode, hashn
 from common.exceptions import *
 
 __all__ = ['initialize_db', 'fetch_user_record', 'update_user_record']
+
+
+### Constants ##################################################################
+INITIAL_USER_ACCOUNTS = [
+    ['Alice', 'Al1ceisC**l%13'],
+    ['Bob', 'D0ntmessw/Tex4s~88'],
+    ['test', 'password'],
+    ['foo', 'password'],
+    ['bar', 'password']
+]
+DB_LOCATION = 'resources/server.db'
 
 
 ### SQL Statements #############################################################
@@ -51,14 +62,19 @@ SQL_UPDATE_USER_RECORD = (
         PASSWD_HASH = ?,
         N = ?,
         LAST_LOGIN = ?
-    WHERE USERS.ID == ?
+    WHERE USERS.NAME == ?
 '''
 )
 
 
 ### Methods ####################################################################
 def initialize_db():
-    with sqlite.connect('resources/users.db') as con:
+    """ Initializes the database for the server. """
+    # remove db if it already exists
+    if os.path.isfile(DB_LOCATION):
+        os.remove(DB_LOCATION)
+    # build db and populate users
+    with sqlite.connect(DB_LOCATION) as con:
         cur = con.cursor()
         cur.execute(SQL_BUILD_USER_TABLE)
         for username, password in INITIAL_USER_ACCOUNTS:
@@ -71,17 +87,27 @@ def initialize_db():
 
 
 def fetch_user_record(username):
-    with sqlite.connect('resources/users.db') as con:
+    """ Fetches and returns a user record for a given username. """
+    with sqlite.connect(DB_LOCATION) as con:
         cur = con.cursor()
-        result_set = cur.execute(SQL_FETCH_USER_RECORD, [username])
+        result_set = cur.execute(SQL_FETCH_USER_RECORD, [ username ])
         user = result_set.fetchone()
+        # ensure that one and only one result is returned
         if user is None or not result_set.fetchone() is None:
             raise UsernameVerificationError()
-        user_id, _, passwd_hash, n, _ = user
-        return user_id, passwd_hash, n
+        # (user_id, username, password_hash, n, last_login)
+        return user
 
 
-def update_user_record(uid, phash, n):
-    with sqlite.connect('resources/users.db') as con:
+def update_user_record(username, passwd_hash):
+    """ Updates the user record of a given username, replacing the password
+        hash and decrementing n. """
+    with sqlite.connect(DB_LOCATION) as con:
         cur = con.cursor()
-        cur.execute(SQL_UPDATE_USER_RECORD, [phash, n, int(time()), uid])
+        *_, n, _  = fetch_user_record(username)
+        cur.execute(SQL_UPDATE_USER_RECORD, [
+            passwd_hash,
+            n-1,
+            int(time.time()),
+            username
+        ])

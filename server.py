@@ -1,22 +1,19 @@
-# TODO: config file with addresses and ports?
 
+import time
+import sys
+from os import urandom
+from random import random
+from signal import signal, SIGINT
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+
+from common.exceptions import *
+from sqlite3 import Error as SQLiteError
+from cryptography.exceptions import InvalidSignature
 
 from common import ConnectionHandler
 from common.config import *
 from common.crypto import *
-from common.exceptions import *
 from common.db import *
-
-from sqlite3 import Error as SQLiteError
-from cryptography.exceptions import InvalidSignature
-
-from os import urandom
-import time
-from random import random
-
-from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
-from signal import signal, SIGINT
-from sys import exit
 
 
 ### Connection Delegates #######################################################
@@ -42,12 +39,11 @@ class ConnectionHelper():
 class AuthenticationHelper(ConnectionHelper):
     def initial_action(self, nonce):
         try:
-            self.user_data = fetch_user_record(self.client_name)
+            *_, self.passwd_hash, n, _ = fetch_user_record(self.client_name)
         except (UsernameVerificationError, SQLiteError) as e:
             self.owner.handle_exception(e, self.address)
             self.owner.remove_connection(self.address)
         else:
-            *_, n = self.user_data
             self.send(nonce, self.nonce, encode(n))
 
     def handle_response(self, response, status):
@@ -55,17 +51,20 @@ class AuthenticationHelper(ConnectionHelper):
             nonce, passwd_hash = self.decrypt_message(response)
             if not nonce == self.nonce:
                 raise NonceVerificationError()
-            uid, phash, n = self.user_data
-            if not hash_items(passwd_hash) == phash:
+            if not hash_items(passwd_hash) == self.passwd_hash:
                 raise PasswordVerificationError()
-            # replace db with new passwd_hash and n-1
-            update_user_record(uid, passwd_hash, n-1)
+            # update db with new password hash
+            update_user_record(self.client_name, passwd_hash)
         except Exception as e:
             self.owner.handle_exception(e, self.address)
         else:
             # generate resources and send them to the client
             self.send(
-                self.owner.add_user(self.client_name, self.address, self.client_pubkey),
+                self.owner.add_user(
+                    self.client_name,
+                    self.address,
+                    self.client_pubkey
+                ),
                 self.owner.get_client_list(),
                 self.owner.get_CRL()
             )
@@ -106,10 +105,10 @@ class ResourceRequestHelper(ConnectionHelper):
 class ChatServer(ConnectionHandler):
     def __init__(self, address):
         super().__init__(address)
-        self.client_list = {} # address: (name, pubkey, certificate_id, certificate_expiration)
+        self.client_list = {} # address: (name, pubkey, cert_id, cert_expiration)
         self.CRL = {} # certificate_id: certificate_expiration
-        self.certificate_id = int(random()*10000) # random starting id for certificates
-
+        # random starting id for certificates
+        self.certificate_id = int(random()*10000)
         # public and private keys
         self.pubkey = get_public_key('resources/server_public_key')
         self.prikey = get_private_key('resources/server_private_key')
@@ -227,7 +226,7 @@ class ChatServer(ConnectionHandler):
     def remove_user(self, address):
         try:
             name, _, cert_id, expiration = self.client_list.pop(address)
-            print('-> User: "{}"" at: {} logged out.'.format(name, address))
+            print('-> User: "{}" at: {} logged out.'.format(name, address))
             if expiration > int(time.time()):
                 self.CRL[cert_id] = expiration
         except KeyError:
@@ -252,7 +251,7 @@ def parse_args():
 def signal_handler(signal, frame):
     print("\nScript terminated by user...")
     print("Attempting graceful shutdown...")
-    exit(0)
+    sys.exit(0)
 
 
 ### Main #######################################################################
@@ -260,6 +259,11 @@ def main():
     options = parse_args()
     signal(SIGINT, signal_handler)
     address = (options.host, options.port)
+    try:
+        initialize_db()
+    except SQLiteError as e:
+        print('Error initializing database:', e, '\n')
+        sys.exit(1)
     chat_server = ChatServer(address)
     print('Instant messaging authentication server running at:', address)
     print('Press Ctrl-C to quit...', '\n')
