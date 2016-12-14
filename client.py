@@ -1,6 +1,6 @@
 
 import os
-
+import sys
 import time
 
 from common import ConnectionHandler
@@ -8,11 +8,8 @@ from common.config import *
 from common.crypto import *
 from common.exceptions import *
 
-from cryptography.exceptions import InvalidSignature
-
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from signal import signal, SIGINT
-import sys
 
 
 ### Connection Delegates #######################################################
@@ -178,7 +175,7 @@ class ChatInitHelper(ConnectionHelper):
         signed_msg = IFS.join([peer_public_key, nonce])
         verify_signature(pubkey, sig, signed_msg)
         if not peer_public_key == encode(self.peer_public_key):
-            raise InvalidSignature
+            raise InvalidSignatureError()
         # everything checks out, set up the persistant connection
         self.finish(True, name, self.address, self.shared_key)
 
@@ -228,7 +225,7 @@ class ChatAuthenticationHelper():
             signed_msg = IFS.join([peer_public_key, n1])
             verify_signature(pubkey, sig, signed_msg)
             if not peer_public_key == encode(self.peer_public_key):
-                raise InvalidSignature
+                raise InvalidSignatureError()
         except Exception as e:
             print(e)
             self.finish(False)

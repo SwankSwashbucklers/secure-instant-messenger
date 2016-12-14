@@ -6,14 +6,11 @@ from random import random
 from signal import signal, SIGINT
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
-from common.exceptions import *
-from sqlite3 import Error as SQLiteError
-from cryptography.exceptions import InvalidSignature
-
 from common import ConnectionHandler
 from common.config import *
 from common.crypto import *
 from common.db import *
+from common.exceptions import *
 
 
 ### Connection Delegates #######################################################
@@ -40,7 +37,7 @@ class AuthenticationHelper(ConnectionHelper):
     def initial_action(self, nonce):
         try:
             *_, self.passwd_hash, n, _ = fetch_user_record(self.client_name)
-        except (UsernameVerificationError, SQLiteError) as e:
+        except (UsernameVerificationError, DatabaseError) as e:
             self.owner.handle_exception(e, self.address)
             self.owner.remove_connection(self.address)
         else:
@@ -149,11 +146,9 @@ class ChatServer(ConnectionHandler):
                     verify_signature(pubkey, *signature)
                     _, message = signature
                     if not decode(message, str) == FAREWELL:
-                        raise InvalidSignature()
+                        raise InvalidSignatureError()
                 except KeyError:
                     raise UserNotFoundError()
-                except InvalidSignature:
-                    raise
                 else:
                     self.remove_user(address)
                     self.send(encode("Logout successful."), address)
@@ -178,13 +173,13 @@ class ChatServer(ConnectionHandler):
             err_msg = "Incorrect password provided."
         elif type(e) is UsernameVerificationError:
             err_msg = "An improper username was provided.  Please try again."
-        elif type(e) is InvalidSignature:
+        elif type(e) is InvalidSignatureError:
             err_msg = "Invalid signature provided."
         elif type(e) is CertificateExpirationError:
             err_msg = "Your certificate has expired, please login again."
         elif type(e) is AlreadyLoggedInError:
             err_msg = "User is already logged in."
-        elif type(e) is SQLiteError:
+        elif type(e) is DatabaseError:
             err_msg = "There was a database error.  Please try again."
         else:
             print('Unknown error:', e)
@@ -261,8 +256,8 @@ def main():
     address = (options.host, options.port)
     try:
         initialize_db()
-    except SQLiteError as e:
-        print('Error initializing database:', e, '\n')
+    except DatabaseError:
+        print('Error initializing database.\n')
         sys.exit(1)
     chat_server = ChatServer(address)
     print('Instant messaging authentication server running at:', address)

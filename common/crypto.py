@@ -5,9 +5,10 @@
 from os import urandom
 from functools import reduce
 
+from common.exceptions import *
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.backends import default_backend
 
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.primitives.hashes import Hash, SHA256, SHA1
@@ -218,11 +219,14 @@ def sign(private_key, data):
 
 def verify_signature(public_key, signature, data):
     """ Function that verifies the signature of the input ciphertext.
-        Throws an InvalidSignature if verification fails. """
-    public_key.verify(signature, data,
-        padding.PSS(
-            mgf=padding.MGF1(SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ),
-        SHA256()
-    )
+        Throws an InvalidSignatureError if verification fails. """
+    try:
+        public_key.verify(signature, data,
+            padding.PSS(
+                mgf=padding.MGF1(SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            SHA256()
+        )
+    except InvalidSignature:
+        raise InvalidSignatureError()

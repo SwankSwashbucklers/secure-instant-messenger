@@ -17,7 +17,7 @@ from enum import Enum
 from common.crypto import get_public_key
 
 
-__all__ = ['CLIENT_STATE', 'SERVER_ADDRESS', 'SERVER_METHODS', 'SERVER_RESOURCES', 'SERVER_PUBKEY', 'MESSAGE_STATUSES', 'GREETING', 'FAREWELL', 'IFS', 'INITIAL_USER_ACCOUNTS']
+__all__ = ['CLIENT_STATE', 'SERVER_ADDRESS', 'SERVER_METHODS', 'SERVER_RESOURCES', 'SERVER_PUBKEY', 'MESSAGE_STATUSES', 'GREETING', 'FAREWELL', 'IFS']
 
 CLIENT_STATE = Enum('ClientState', 'INITIAL UNATHENTICATED AUTHENTICATED SHUTDOWN')
 
@@ -30,11 +30,3 @@ MESSAGE_STATUSES = Enum('MessageStatuses', 'OK ERROR')
 GREETING = 'IWANTTOTALK'
 FAREWELL = 'LOGOUT'
 IFS = b'<break>'
-
-INITIAL_USER_ACCOUNTS = [
-    ['Alice', 'Al1ceisC**l%13'],
-    ['Bob', 'D0ntmessw/Tex4s~88'],
-    ['test', 'password'],
-    ['foo', 'password'],
-    ['bar', 'password']
-]
