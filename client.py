@@ -440,7 +440,6 @@ class ChatClient(ConnectionHandler):
         sys.exit(0)
 
 
-
 ### Command Line Interface #####################################################
 def parse_args():
     parser = ArgumentParser(
@@ -476,6 +475,7 @@ def main():
             chat_client.receive_user_input(usr_input)
         except KeyboardInterrupt:
             cleanly_exit()
+
 
 if __name__ == '__main__':
     main()

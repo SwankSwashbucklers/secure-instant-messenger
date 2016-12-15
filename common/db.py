@@ -10,16 +10,18 @@ import sqlite3 as sqlite
 from common.exceptions import *
 from common.crypto import encode, hashn
 
+
 __all__ = ['initialize_db', 'fetch_user_record', 'update_user_record']
 
 
 ### Constants ##################################################################
 INITIAL_USER_ACCOUNTS = [
-    ['Alice', 'Al1ceisC**l%13'],
-    ['Bob', 'D0ntmessw/Tex4s~88'],
-    ['test', 'password'],
-    ['foo', 'password'],
-    ['bar', 'password']
+    ['Alice', 'Whit3R@bbit'],
+    ['Bob', 'joy0painting'],
+    ['Trudy', 'valkyries48' ],
+    ['test', '123'],
+    ['foo', '123'],
+    ['bar', '123']
 ]
 DB_LOCATION = 'resources/server.db'
 
